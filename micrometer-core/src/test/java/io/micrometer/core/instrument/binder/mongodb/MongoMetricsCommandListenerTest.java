@@ -15,11 +15,15 @@
  */
 package io.micrometer.core.instrument.binder.mongodb;
 
+import java.util.Date;
+import java.util.concurrent.atomic.AtomicReference;
+
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientOptions;
 import com.mongodb.ServerAddress;
 import com.mongodb.event.ClusterListenerAdapter;
 import com.mongodb.event.ClusterOpeningEvent;
+import io.micrometer.core.instrument.Meter.Id;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -27,9 +31,6 @@ import org.bson.Document;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-
-import java.util.Date;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -49,13 +50,14 @@ class MongoMetricsCommandListenerTest extends AbstractMongoDbTest {
         registry = new SimpleMeterRegistry();
         clusterId = new AtomicReference<>();
         MongoClientOptions options = MongoClientOptions.builder()
-                .addCommandListener(new MongoMetricsCommandListener(registry))
+                .addCommandListener(MongoMetricsCommandListener.builder(registry).build())
                 .addClusterListener(new ClusterListenerAdapter() {
                     @Override
                     public void clusterOpening(ClusterOpeningEvent event) {
                         clusterId.set(event.getClusterId().getValue());
                     }
-                }).build();
+                })
+                .build();
         mongo = new MongoClient(new ServerAddress(HOST, port), options);
     }
 
@@ -64,11 +66,11 @@ class MongoMetricsCommandListenerTest extends AbstractMongoDbTest {
         mongo.getDatabase("test")
                 .getCollection("testCol")
                 .insertOne(new Document("testDoc", new Date()));
-
         Tags tags = Tags.of(
                 "cluster.id", clusterId.get(),
                 "server.address", String.format("%s:%s", HOST, port),
                 "command", "insert",
+                "collection", "testCol",
                 "status", "SUCCESS"
         );
         assertThat(registry.get("mongodb.driver.commands").tags(tags).timer().count()).isEqualTo(1);
@@ -84,9 +86,40 @@ class MongoMetricsCommandListenerTest extends AbstractMongoDbTest {
                 "cluster.id", clusterId.get(),
                 "server.address", String.format("%s:%s", HOST, port),
                 "command", "dropIndexes",
+                "collection", "testCol",
                 "status", "FAILED"
         );
         assertThat(registry.get("mongodb.driver.commands").tags(tags).timer().count()).isEqualTo(1);
+    }
+
+    @Test
+    void shouldCreateSuccessCommandMetricWithCustomNameAndDesc() {
+        final String customName = "mongocommando";
+        final String customDesc = "Mongo Commando";
+
+        MongoClientOptions options = MongoClientOptions.builder()
+                .addCommandListener(MongoMetricsCommandListener.builder(registry).timerMetricName(customName).timerMetricDescription(customDesc).build())
+                .addClusterListener(new ClusterListenerAdapter() {
+                    @Override
+                    public void clusterOpening(ClusterOpeningEvent event) {
+                        clusterId.set(event.getClusterId().getValue());
+                    }
+                })
+                .build();
+        try (MongoClient customMongo = new MongoClient(new ServerAddress(HOST, port), options)) {
+            customMongo.getDatabase("test")
+                    .getCollection("testCol")
+                    .insertOne(new Document("testDoc", new Date()));
+            Tags tags = Tags.of(
+                    "cluster.id", clusterId.get(),
+                    "server.address", String.format("%s:%s", HOST, port),
+                    "command", "insert",
+                    "collection", "testCol",
+                    "status", "SUCCESS"
+            );
+            assertThat(registry.get(customName).tags(tags).timer().count()).isEqualTo(1);
+            assertThat(registry.get(customName).tags(tags).timer().getId()).extracting(Id::getDescription).isEqualTo(customDesc);
+        }
     }
 
     @AfterEach
